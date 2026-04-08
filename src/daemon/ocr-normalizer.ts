@@ -1,22 +1,41 @@
 import { PreparedOcrPayload } from './daemon.types';
 
 const LEGACY_KEY_ALIASES: Record<string, string> = {
-  sn_ruc: 'sn_id_fiscal',
-  ruc: 'sn_id_fiscal',
-  ruc_proveedor: 'sn_id_fiscal',
+  sn_id_fiscal: 'sn_ruc',
+  sn_ruc: 'sn_ruc',
+  ruc: 'sn_ruc',
+  ruc_proveedor: 'sn_ruc',
+  supplierruc: 'sn_ruc',
+  supplier_ruc: 'sn_ruc',
+
   numero_documento: 'doc_numero',
   numero_factura: 'doc_numero',
+  invoicenumber: 'doc_numero',
+  invoice_number: 'doc_numero',
+
   fecha_emision: 'doc_fecha_emision',
+  docdate: 'doc_fecha_emision',
+  doc_date: 'doc_fecha_emision',
+
   timbrado: 'doc_timbrado',
+  u_timb: 'doc_timbrado',
+  u_timb_number: 'doc_timbrado',
+
   vence_timbrado: 'doc_vence_timbrado',
+  docduedate: 'doc_vence_timbrado',
+  doc_due_date: 'doc_vence_timbrado',
+
   periodo: 'doc_periodo',
   cdc: 'doc_cdc',
+
   monto_10: 'doc_monto_10',
   iva_10: 'doc_iva_10',
   monto_5: 'doc_monto_5',
   iva_5: 'doc_iva_5',
   monto_exento: 'doc_monto_exento',
   monto_total: 'doc_monto_total',
+  doctotal: 'doc_monto_total',
+  doc_total: 'doc_monto_total',
 };
 
 const PROVIDER_NAME_KEYS = [
@@ -24,13 +43,17 @@ const PROVIDER_NAME_KEYS = [
   'sn_nombre',
   'proveedor',
   'nombre_proveedor',
+  'supplier_name',
+  'suppliername',
 ];
 
 const PROVIDER_FISCAL_ID_KEYS = [
-  'sn_id_fiscal',
   'sn_ruc',
+  'sn_id_fiscal',
   'ruc',
   'ruc_proveedor',
+  'supplier_ruc',
+  'supplierruc',
 ];
 
 export function normalizeOcrPayload(
@@ -44,11 +67,7 @@ export function normalizeOcrPayload(
 
   for (const [rawKey, value] of Object.entries(payload)) {
     const key = rawKey.trim();
-    if (!key) {
-      continue;
-    }
-
-    if (value === undefined) {
+    if (!key || value === undefined) {
       continue;
     }
 
@@ -58,7 +77,7 @@ export function normalizeOcrPayload(
       continue;
     }
 
-    // No pisar el valor real si ya vino con el nombre canonico.
+    // Si ya vino el campo canonico, no lo pisamos con un alias.
     if (
       key !== resolvedColumn &&
       Object.prototype.hasOwnProperty.call(documentUpdates, resolvedColumn)
@@ -74,7 +93,7 @@ export function normalizeOcrPayload(
   }
 
   const providerFiscalId =
-    toNonEmptyString(documentUpdates.sn_id_fiscal) ??
+    toNonEmptyString(documentUpdates.sn_ruc) ??
     firstNonEmptyFromPayload(payload, PROVIDER_FISCAL_ID_KEYS);
 
   const providerName = firstNonEmptyFromPayload(payload, PROVIDER_NAME_KEYS);
@@ -147,7 +166,12 @@ function resolveDocumentColumnKey(
     return key;
   }
 
-  const legacyAlias = LEGACY_KEY_ALIASES[key];
+  const normalizedKey = key.toLowerCase();
+  if (updatableColumns.has(normalizedKey)) {
+    return normalizedKey;
+  }
+
+  const legacyAlias = LEGACY_KEY_ALIASES[normalizedKey];
   if (legacyAlias && updatableColumns.has(legacyAlias)) {
     return legacyAlias;
   }
@@ -160,13 +184,22 @@ function firstNonEmptyFromPayload(
   keys: string[],
 ): string | null {
   for (const key of keys) {
-    const value = toNonEmptyString(payload[key]);
-    if (value) {
-      return value;
+    const directValue = toNonEmptyString(payload[key]);
+    if (directValue) {
+      return directValue;
+    }
+
+    const camelCaseValue = toNonEmptyString(payload[toCamelCase(key)]);
+    if (camelCaseValue) {
+      return camelCaseValue;
     }
   }
 
   return null;
+}
+
+function toCamelCase(value: string): string {
+  return value.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());
 }
 
 function toNonEmptyString(value: unknown): string | null {

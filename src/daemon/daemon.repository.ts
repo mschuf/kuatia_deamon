@@ -20,12 +20,21 @@ interface ColumnNameRow {
   column_name: string;
 }
 
+type PendingDocumentsSource = 'unknown' | 'view' | 'table';
+
 @Injectable()
 export class DaemonRepository {
   private readonly schema: string;
   private readonly columnsCacheMs: number;
+  private readonly pendingStatuses: string[];
+
   private documentColumnsCache: string[] = [];
   private documentColumnsCacheAt = 0;
+
+  private promptFilterColumnsCache: Set<string> | null = null;
+  private promptFilterColumnsCacheAt = 0;
+
+  private pendingDocumentsSource: PendingDocumentsSource = 'unknown';
 
   private readonly protectedColumns = new Set<string>([
     'id',
@@ -45,7 +54,7 @@ export class DaemonRepository {
     const configuredSchema =
       this.configService.get<string>('DB_SCHEMA') ?? 'public';
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(configuredSchema)) {
-      throw new Error(`DB_SCHEMA inválido: ${configuredSchema}`);
+      throw new Error(`DB_SCHEMA invalido: ${configuredSchema}`);
     }
     this.schema = configuredSchema;
 
@@ -57,50 +66,42 @@ export class DaemonRepository {
       Number.isFinite(configuredCacheMs) && configuredCacheMs >= 0
         ? Math.floor(configuredCacheMs)
         : 300000;
+
+    this.pendingStatuses = this.parsePendingStatuses(
+      this.configService.get<string>('OCR_PENDING_STATUSES'),
+    );
   }
 
   async fetchPendingDocuments(limit: number): Promise<DocumentToProcess[]> {
-    const rawRows: unknown = await this.dataSource.query(
-      `
-      SELECT id, emp_id, doc_documento
-      FROM ${this.schema}.v_documentos_a_procesar
-      ORDER BY id ASC
-      LIMIT $1
-      `,
-      [limit],
-    );
+    if (this.pendingDocumentsSource !== 'table') {
+      try {
+        const rows = await this.fetchPendingDocumentsFromView(limit);
+        this.pendingDocumentsSource = 'view';
+        return rows;
+      } catch (error) {
+        if (!this.isUndefinedRelationError(error)) {
+          throw error;
+        }
+        this.pendingDocumentsSource = 'table';
+      }
+    }
 
-    return this.asArray<DocumentToProcess>(rawRows);
+    return this.fetchPendingDocumentsFromTable(limit);
   }
 
-  async findActivePromptByCompany(
-    companyId: number,
-  ): Promise<PromptRow | null> {
+  async findLatestActivePrompt(): Promise<PromptRow | null> {
+    const promptFilters = await this.buildPromptFilters();
+    const whereClause =
+      promptFilters.length > 0 ? `WHERE ${promptFilters.join(' AND ')}` : '';
+
     const rawRows: unknown = await this.dataSource.query(
       `
-      SELECT id, lk_empresa_id, prompt, active
+      SELECT id, prompt
       FROM ${this.schema}.lk_prompts
-      WHERE active = true
-        AND lk_empresa_id = $1
+      ${whereClause}
       ORDER BY id DESC
       LIMIT 1
       `,
-      [companyId],
-    );
-
-    const rows = this.asArray<PromptRow>(rawRows);
-    return rows[0] ?? null;
-  }
-
-  async findPromptById(promptId: number): Promise<PromptRow | null> {
-    const rawRows: unknown = await this.dataSource.query(
-      `
-      SELECT id, lk_empresa_id, prompt, active
-      FROM ${this.schema}.lk_prompts
-      WHERE id = $1
-      LIMIT 1
-      `,
-      [promptId],
     );
 
     const rows = this.asArray<PromptRow>(rawRows);
@@ -145,6 +146,7 @@ export class DaemonRepository {
   async persistProcessedDocument(
     documentId: number,
     ocrData: PreparedOcrPayload,
+    processedStatus = 'procesado',
   ): Promise<PersistResult> {
     return this.dataSource.transaction(async (manager) => {
       const updateEntries = Object.entries(ocrData.documentUpdates).filter(
@@ -171,7 +173,8 @@ export class DaemonRepository {
         );
       }
 
-      assignments.push(`doc_estado = 'OCR_PROCESADO'`);
+      values.push(processedStatus);
+      assignments.push(`doc_estado = $${values.length}`);
       assignments.push(`fecha_modificacion = NOW()`);
       values.push(documentId);
 
@@ -206,6 +209,90 @@ export class DaemonRepository {
     );
   }
 
+  private async fetchPendingDocumentsFromView(
+    limit: number,
+  ): Promise<DocumentToProcess[]> {
+    const rawRows: unknown = await this.dataSource.query(
+      `
+      SELECT id, emp_id, doc_documento
+      FROM ${this.schema}.v_documentos_a_procesar
+      ORDER BY id ASC
+      LIMIT $1
+      `,
+      [limit],
+    );
+
+    return this.asArray<DocumentToProcess>(rawRows);
+  }
+
+  private async fetchPendingDocumentsFromTable(
+    limit: number,
+  ): Promise<DocumentToProcess[]> {
+    const rawRows: unknown = await this.dataSource.query(
+      `
+      SELECT id, emp_id, doc_documento
+      FROM ${this.schema}.lk_documentos
+      WHERE doc_documento IS NOT NULL
+        AND BTRIM(doc_documento) <> ''
+        AND LOWER(BTRIM(COALESCE(doc_estado, ''))) = ANY($1::text[])
+      ORDER BY id ASC
+      LIMIT $2
+      `,
+      [this.pendingStatuses, limit],
+    );
+
+    return this.asArray<DocumentToProcess>(rawRows);
+  }
+
+  private async buildPromptFilters(): Promise<string[]> {
+    const columns = await this.getPromptFilterColumns();
+    const filters: string[] = [];
+
+    if (columns.has('active')) {
+      filters.push('active = true');
+    }
+    if (columns.has('habilitado')) {
+      filters.push('habilitado = true');
+    }
+    if (columns.has('enabled')) {
+      filters.push('enabled = true');
+    }
+
+    return filters;
+  }
+
+  private async getPromptFilterColumns(): Promise<Set<string>> {
+    const now = Date.now();
+    const canReuseCache =
+      this.promptFilterColumnsCache &&
+      now - this.promptFilterColumnsCacheAt <= this.columnsCacheMs;
+    if (canReuseCache) {
+      return new Set(this.promptFilterColumnsCache);
+    }
+
+    const rawRows: unknown = await this.dataSource.query(
+      `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = $1
+        AND table_name = 'lk_prompts'
+        AND column_name IN ('active', 'habilitado', 'enabled')
+      `,
+      [this.schema],
+    );
+    const rows = this.asArray<ColumnNameRow>(rawRows);
+    const columnSet = new Set(
+      rows
+        .map((row) => String(row.column_name || '').trim().toLowerCase())
+        .filter((columnName) => columnName.length > 0),
+    );
+
+    this.promptFilterColumnsCache = columnSet;
+    this.promptFilterColumnsCacheAt = now;
+
+    return new Set(columnSet);
+  }
+
   private async ensureBusinessPartner(
     manager: EntityManager,
     fiscalId: string | null,
@@ -223,7 +310,7 @@ export class DaemonRepository {
       `
       SELECT sn_id
       FROM ${this.schema}.lk_socios_negocios
-      WHERE sn_id_fiscal = $1
+      WHERE sn_ruc = $1
       LIMIT 1
       `,
       [normalizedFiscalId],
@@ -243,7 +330,7 @@ export class DaemonRepository {
       INSERT INTO ${this.schema}.lk_socios_negocios
       (
         sn_nombre,
-        sn_id_fiscal,
+        sn_ruc,
         sn_tipo,
         sn_activo,
         sn_fecha_creacion,
@@ -269,6 +356,26 @@ export class DaemonRepository {
       partnerCreated: true,
       partnerId: insertedPartnerId,
     };
+  }
+
+  private parsePendingStatuses(rawValue: string | undefined): string[] {
+    const value = (rawValue ?? 'cargado').trim();
+    const statuses = value
+      .split(',')
+      .map((status) => status.trim().toLowerCase())
+      .filter((status, index, allStatuses) => {
+        return status.length > 0 && allStatuses.indexOf(status) === index;
+      });
+
+    return statuses.length > 0 ? statuses : ['cargado'];
+  }
+
+  private isUndefinedRelationError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+    const maybeCode = (error as { code?: unknown }).code;
+    return maybeCode === '42P01';
   }
 
   private asArray<T>(value: unknown): T[] {

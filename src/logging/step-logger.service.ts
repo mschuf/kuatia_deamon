@@ -32,7 +32,7 @@ const LEVEL_ORDER: StepLogLevel[] = [
 
 @Injectable()
 export class StepLoggerService implements OnModuleInit {
-  private readonly logger = new Logger('ALVIA_DAEMON');
+  private readonly logger = new Logger('KUATIA_DAEMON');
   private readonly logDir: string;
   private readonly logToFile: boolean;
   private readonly minLevel: StepLogLevel;

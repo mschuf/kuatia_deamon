@@ -6,9 +6,10 @@ export interface DocumentToProcess {
 
 export interface PromptRow {
   id: number;
-  lk_empresa_id: number;
   prompt: string;
-  active: boolean;
+  active?: boolean;
+  enabled?: boolean;
+  habilitado?: boolean;
 }
 
 export interface PreparedOcrPayload {

@@ -2,8 +2,8 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { StepLoggerService } from '../logging/step-logger.service';
-import { AlviaOcrClient } from './alvia-ocr.client';
 import { DaemonRepository } from './daemon.repository';
+import { KuatiaOcrClient } from './kuatia-ocr.client';
 import {
   DaemonCycleSummary,
   DocumentToProcess,
@@ -30,13 +30,13 @@ export class OcrDaemonService {
   constructor(
     private readonly configService: ConfigService,
     private readonly daemonRepository: DaemonRepository,
-    private readonly alviaOcrClient: AlviaOcrClient,
+    private readonly kuatiaOcrClient: KuatiaOcrClient,
     private readonly stepLogger: StepLoggerService,
   ) {}
 
   getStatus(): Record<string, unknown> {
     return {
-      service: 'alvia_daemon',
+      service: 'kuatia-daemon',
       running: this.isRunning,
       intervalMinutes: this.intervalMinutes,
       defaultBatchSize: this.defaultBatchSize,
@@ -91,7 +91,7 @@ export class OcrDaemonService {
 
     try {
       const limit = this.resolveBatchLimit(options.limit);
-      const defaultPrompt = await this.loadDefaultPrompt(runId);
+      const globalPrompt = await this.loadLatestPrompt(runId);
       const updatableColumns =
         await this.daemonRepository.getDocumentUpdatableColumns();
       const pendingDocuments =
@@ -105,6 +105,8 @@ export class OcrDaemonService {
           count: pendingDocuments.length,
           limit,
           updatableColumnsCount: updatableColumns.size,
+          hasPrompt: Boolean(globalPrompt),
+          promptId: globalPrompt?.id ?? null,
         },
       });
 
@@ -113,7 +115,7 @@ export class OcrDaemonService {
         const result = await this.processDocument(
           runId,
           document,
-          defaultPrompt,
+          globalPrompt,
           updatableColumns,
         );
 
@@ -191,7 +193,7 @@ export class OcrDaemonService {
   private async processDocument(
     runId: string,
     document: DocumentToProcess,
-    defaultPrompt: PromptRow | null,
+    globalPrompt: PromptRow | null,
     updatableColumns: Set<string>,
   ): Promise<ProcessResult> {
     const contextBase = {
@@ -209,7 +211,7 @@ export class OcrDaemonService {
       if (!document.doc_documento) {
         await this.safeSetDocumentStatus(
           document.id,
-          'OCR_SIN_ARCHIVO',
+          this.statusWithoutDocument,
           contextBase,
         );
         this.stepLogger.error('Documento sin contenido para OCR.', {
@@ -222,16 +224,14 @@ export class OcrDaemonService {
         };
       }
 
-      const companyPrompt =
-        await this.daemonRepository.findActivePromptByCompany(document.emp_id);
-      if (!companyPrompt) {
+      if (!globalPrompt) {
         await this.safeSetDocumentStatus(
           document.id,
-          'OCR_NO_PROMPT',
+          this.statusWithoutPrompt,
           contextBase,
         );
         this.stepLogger.error(
-          'No existe prompt activo para la empresa del documento.',
+          'No existe prompt activo/habilitado para ejecutar OCR.',
           {
             ...contextBase,
             step: 'doc.prompt',
@@ -243,28 +243,25 @@ export class OcrDaemonService {
         };
       }
 
-      const composedPrompt = this.composePrompt(
-        companyPrompt.prompt,
-        defaultPrompt,
-      );
+      const composedPrompt = this.composePrompt(globalPrompt.prompt);
 
-      this.stepLogger.debug('Enviando documento a alvia_ocr.', {
+      this.stepLogger.debug('Enviando documento a OCR-KUATIA.', {
         ...contextBase,
         step: 'doc.send_ocr',
         metadata: {
           documentLength: document.doc_documento.length,
-          promptId: companyPrompt.id,
+          promptId: globalPrompt.id,
         },
       });
 
-      const rawOcrData = await this.alviaOcrClient.processDocument({
+      const rawOcrData = await this.kuatiaOcrClient.processDocument({
         documento: document.doc_documento,
         empresaId: document.emp_id,
         prompt: composedPrompt,
         documentId: document.id,
       });
 
-      this.stepLogger.debug('Respuesta OCR recibida desde alvia_ocr.', {
+      this.stepLogger.debug('Respuesta OCR recibida desde OCR-KUATIA.', {
         ...contextBase,
         step: 'doc.ocr_response',
         metadata: {
@@ -278,7 +275,7 @@ export class OcrDaemonService {
       if (updateFields.length === 0) {
         await this.safeSetDocumentStatus(
           document.id,
-          'OCR_INCOMPLETO',
+          this.statusIncomplete,
           contextBase,
         );
         this.stepLogger.error(
@@ -299,11 +296,11 @@ export class OcrDaemonService {
         };
       }
 
-      const persistResult =
-        await this.daemonRepository.persistProcessedDocument(
-          document.id,
-          normalizedData,
-        );
+      const persistResult = await this.daemonRepository.persistProcessedDocument(
+        document.id,
+        normalizedData,
+        this.statusProcessed,
+      );
 
       this.stepLogger.info(
         'Documento actualizado correctamente en base de datos.',
@@ -326,7 +323,7 @@ export class OcrDaemonService {
         partnerCreated: persistResult.partnerCreated,
       };
     } catch (error) {
-      await this.safeSetDocumentStatus(document.id, 'OCR_ERROR', contextBase);
+      await this.safeSetDocumentStatus(document.id, this.statusError, contextBase);
       this.stepLogger.error(
         'Error procesando documento.',
         {
@@ -362,10 +359,7 @@ export class OcrDaemonService {
     }
   }
 
-  private composePrompt(
-    companyPrompt: string,
-    defaultPrompt: PromptRow | null,
-  ): string {
+  private composePrompt(globalPrompt: string): string {
     const strictOutputInstructions = `
 INSTRUCCIONES OBLIGATORIAS DE SALIDA:
 - Responde exclusivamente con JSON valido.
@@ -375,11 +369,7 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
 - Puedes incluir sn_name para indicar el nombre del proveedor cuando se deba crear el socio de negocio.
 `;
 
-    if (!defaultPrompt) {
-      return `${companyPrompt}\n\n${strictOutputInstructions}`;
-    }
-
-    return `${companyPrompt}\n\n${strictOutputInstructions}\nReferencia adicional:\n${defaultPrompt.prompt}`;
+    return `${globalPrompt}\n\n${strictOutputInstructions}`;
   }
 
   private resolveBatchLimit(limitOverride: number | undefined): number {
@@ -390,29 +380,45 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
     return this.defaultBatchSize;
   }
 
-  private async loadDefaultPrompt(runId: string): Promise<PromptRow | null> {
-    const promptId = Number(
-      this.configService.get<string>('OCR_DEFAULT_PROMPT_ID') ?? 1,
-    );
-    if (!Number.isFinite(promptId) || promptId <= 0) {
-      return null;
-    }
-
-    const prompt = await this.daemonRepository.findPromptById(promptId);
+  private async loadLatestPrompt(runId: string): Promise<PromptRow | null> {
+    const prompt = await this.daemonRepository.findLatestActivePrompt();
     if (!prompt) {
       this.stepLogger.warn(
-        'No se encontro el prompt base por ID configurado.',
+        'No se encontro un prompt activo/habilitado en lk_prompts.',
         {
           runId,
-          step: 'cycle.default_prompt',
-          metadata: {
-            promptId,
-          },
+          step: 'cycle.prompt_lookup',
         },
       );
     }
 
     return prompt;
+  }
+
+  private get statusProcessed(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_PROCESSED', 'procesado');
+  }
+
+  private get statusWithoutPrompt(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_NO_PROMPT', 'error');
+  }
+
+  private get statusWithoutDocument(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_NO_DOCUMENT', 'error');
+  }
+
+  private get statusIncomplete(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_INCOMPLETE', 'error');
+  }
+
+  private get statusError(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_ERROR', 'error');
+  }
+
+  private resolveConfiguredStatus(envKey: string, fallback: string): string {
+    const rawValue = this.configService.get<string>(envKey);
+    const cleaned = (rawValue ?? '').trim();
+    return cleaned.length > 0 ? cleaned : fallback;
   }
 
   private emptySummary(

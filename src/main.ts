@@ -15,9 +15,9 @@ async function bootstrap() {
   );
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('ALVIA Daemon API')
+    .setTitle('Kuatia Daemon API')
     .setDescription(
-      'Daemon de OCR para procesar documentos pendientes, delegar OCR en alvia_ocr y actualizar lk_documentos.',
+      'Daemon OCR para procesar documentos pendientes de Kuatia, delegar OCR en OCR-KUATIA y actualizar lk_documentos.',
     )
     .setVersion('1.0.0')
     .addTag('daemon')
@@ -29,7 +29,8 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 3010);
   await app.listen(port);
 
-  Logger.log(`Daemon ejecutándose en puerto ${port}`, 'Bootstrap');
-  Logger.log(`Swagger disponible en /api`, 'Bootstrap');
+  Logger.log(`Daemon ejecutandose en puerto ${port}`, 'Bootstrap');
+  Logger.log('Swagger disponible en /api', 'Bootstrap');
 }
+
 void bootstrap();
