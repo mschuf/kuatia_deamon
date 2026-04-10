@@ -20,6 +20,7 @@ interface DocumentFilePayload {
 export class KuatiaOcrClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly downloadTimeoutMs: number;
   private readonly apiToken: string | null;
   private readonly processPath: string;
 
@@ -29,6 +30,10 @@ export class KuatiaOcrClient {
       'http://localhost:3000';
     this.timeoutMs = Number(
       this.configService.get<string>('KUATIA_OCR_TIMEOUT_MS') ?? 120000,
+    );
+    this.downloadTimeoutMs = Number(
+      this.configService.get<string>('KUATIA_OCR_DOWNLOAD_TIMEOUT_MS') ??
+        this.timeoutMs,
     );
     this.processPath =
       this.configService.get<string>('KUATIA_OCR_PROCESS_PATH') ??
@@ -47,52 +52,49 @@ export class KuatiaOcrClient {
     request: ProcessWithOcrRequest,
   ): Promise<Record<string, unknown>> {
     const endpoint = `${this.baseUrl.replace(/\/$/, '')}${this.normalizePath(this.processPath)}`;
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), this.timeoutMs);
+    const filePayload = await this.resolveDocumentFile(request.documento);
+    const formData = new FormData();
+    const fileName = this.buildFileName(
+      request.documentId,
+      filePayload.mimeType,
+    );
 
-    try {
-      const filePayload = await this.resolveDocumentFile(request.documento);
-      const formData = new FormData();
-      const fileName = this.buildFileName(
-        request.documentId,
-        filePayload.mimeType,
-      );
+    formData.append(
+      'file',
+      new Blob([new Uint8Array(filePayload.buffer)], {
+        type: filePayload.mimeType,
+      }),
+      fileName,
+    );
+    formData.append('empresaId', String(request.empresaId));
+    formData.append('prompt', request.prompt);
+    formData.append('documentId', String(request.documentId));
 
-      formData.append(
-        'file',
-        new Blob([new Uint8Array(filePayload.buffer)], {
-          type: filePayload.mimeType,
-        }),
-        fileName,
-      );
-      formData.append('empresaId', String(request.empresaId));
-      formData.append('prompt', request.prompt);
-      formData.append('documentId', String(request.documentId));
+    const headers: Record<string, string> = {};
+    if (this.apiToken) {
+      headers['x-ocr-token'] = this.apiToken;
+    }
 
-      const headers: Record<string, string> = {};
-      if (this.apiToken) {
-        headers['x-ocr-token'] = this.apiToken;
-      }
-
-      const response = await fetch(endpoint, {
+    const response = await this.fetchWithTimeout(
+      endpoint,
+      {
         method: 'POST',
         headers,
         body: formData,
-        signal: abortController.signal,
-      });
+      },
+      this.timeoutMs,
+      `Tiempo de espera agotado al invocar OCR-KUATIA tras ${this.timeoutMs} ms.`,
+    );
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(
-          `OCR-KUATIA respondio ${response.status}: ${errorBody.slice(0, 500)}`,
-        );
-      }
-
-      const responseBody = (await response.json()) as unknown;
-      return this.extractPayload(responseBody);
-    } finally {
-      clearTimeout(timeout);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(
+        `OCR-KUATIA respondio ${response.status}: ${errorBody.slice(0, 500)}`,
+      );
     }
+
+    const responseBody = (await response.json()) as unknown;
+    return this.extractPayload(responseBody);
   }
 
   private extractPayload(payload: unknown): Record<string, unknown> {
@@ -144,7 +146,12 @@ export class KuatiaOcrClient {
     }
 
     if (/^https?:\/\//i.test(value)) {
-      const response = await fetch(value);
+      const response = await this.fetchWithTimeout(
+        value,
+        undefined,
+        this.downloadTimeoutMs,
+        `Tiempo de espera agotado al descargar documento URL tras ${this.downloadTimeoutMs} ms.`,
+      );
       if (!response.ok) {
         throw new Error(`No se pudo descargar documento URL (${response.status})`);
       }
@@ -212,6 +219,31 @@ export class KuatiaOcrClient {
 
   private sanitizeBase64(value: string): string {
     return value.replace(/\s/g, '');
+  }
+
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit | undefined,
+    timeoutMs: number,
+    timeoutMessage: string,
+  ): Promise<Response> {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: abortController.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(timeoutMessage);
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private looksLikeBase64(value: string): boolean {
