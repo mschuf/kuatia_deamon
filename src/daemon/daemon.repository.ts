@@ -16,6 +16,10 @@ interface IdRow {
   sn_id: unknown;
 }
 
+interface DocumentIdRow {
+  id: unknown;
+}
+
 interface ColumnNameRow {
   column_name: string;
 }
@@ -195,6 +199,44 @@ export class DaemonRepository {
 
       return businessPartner;
     });
+  }
+
+  async findExistingDocumentIdByInvoiceNumber(
+    companyId: number,
+    documentId: number,
+    invoiceNumber: string,
+  ): Promise<number | null> {
+    const cleanedInvoiceNumber = invoiceNumber.trim();
+    if (!cleanedInvoiceNumber) {
+      return null;
+    }
+
+    const normalizedDigits = this.onlyDigits(cleanedInvoiceNumber);
+    const values: unknown[] = [companyId, documentId, cleanedInvoiceNumber];
+    let invoicePredicate = `BTRIM(doc_numero) = $3`;
+
+    if (normalizedDigits) {
+      values.push(normalizedDigits);
+      invoicePredicate = `(${invoicePredicate} OR regexp_replace(doc_numero, '[^0-9]', '', 'g') = $4)`;
+    }
+
+    const rawRows: unknown = await this.dataSource.query(
+      `
+      SELECT id
+      FROM ${this.schema}.lk_documentos
+      WHERE emp_id = $1
+        AND id <> $2
+        AND doc_numero IS NOT NULL
+        AND BTRIM(doc_numero) <> ''
+        AND ${invoicePredicate}
+      ORDER BY id ASC
+      LIMIT 1
+      `,
+      values,
+    );
+
+    const rows = this.asArray<DocumentIdRow>(rawRows);
+    return this.toNumericId(rows[0]?.id);
   }
 
   async setDocumentStatus(documentId: number, status: string): Promise<void> {
@@ -392,6 +434,10 @@ export class DaemonRepository {
 
   private quoteIdentifier(identifier: string): string {
     return `"${identifier.replace(/"/g, '""')}"`;
+  }
+
+  private onlyDigits(value: string): string {
+    return value.replace(/[^0-9]/g, '');
   }
 
   private toNumericId(value: unknown): number | null {

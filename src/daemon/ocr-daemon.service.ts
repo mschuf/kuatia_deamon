@@ -7,6 +7,7 @@ import { KuatiaOcrClient } from './kuatia-ocr.client';
 import {
   DaemonCycleSummary,
   DocumentToProcess,
+  PreparedOcrPayload,
   PromptRow,
 } from './daemon.types';
 import { normalizeOcrPayload } from './ocr-normalizer';
@@ -296,6 +297,43 @@ export class OcrDaemonService {
         };
       }
 
+      const invoiceNumber = this.getInvoiceNumberFromOcr(normalizedData);
+      if (invoiceNumber) {
+        const duplicateDocumentId =
+          await this.daemonRepository.findExistingDocumentIdByInvoiceNumber(
+            document.emp_id,
+            document.id,
+            invoiceNumber,
+          );
+
+        if (duplicateDocumentId !== null) {
+          await this.safeSetDocumentStatus(
+            document.id,
+            this.statusDuplicate,
+            contextBase,
+          );
+          this.stepLogger.warn(
+            'Factura duplicada detectada; se omite persistencia OCR.',
+            {
+              ...contextBase,
+              step: 'doc.duplicate_invoice',
+              metadata: {
+                invoiceNumber,
+                duplicateDocumentId,
+                updatedFields: updateFields,
+                providerFiscalId: normalizedData.providerFiscalId,
+                aliasesApplied: normalizedData.aliasesApplied,
+              },
+            },
+          );
+
+          return {
+            status: 'skipped',
+            partnerCreated: false,
+          };
+        }
+      }
+
       const persistResult = await this.daemonRepository.persistProcessedDocument(
         document.id,
         normalizedData,
@@ -372,6 +410,23 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
     return `${globalPrompt}\n\n${strictOutputInstructions}`;
   }
 
+  private getInvoiceNumberFromOcr(
+    normalizedData: PreparedOcrPayload,
+  ): string | null {
+    const invoiceNumber = normalizedData.documentUpdates.doc_numero;
+
+    if (typeof invoiceNumber === 'string') {
+      const trimmed = invoiceNumber.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+
+    if (typeof invoiceNumber === 'number' || typeof invoiceNumber === 'bigint') {
+      return String(invoiceNumber);
+    }
+
+    return null;
+  }
+
   private resolveBatchLimit(limitOverride: number | undefined): number {
     if (typeof limitOverride === 'number' && Number.isFinite(limitOverride)) {
       return Math.max(1, Math.min(200, Math.floor(limitOverride)));
@@ -409,6 +464,10 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
 
   private get statusIncomplete(): string {
     return this.resolveConfiguredStatus('OCR_STATUS_INCOMPLETE', 'error');
+  }
+
+  private get statusDuplicate(): string {
+    return this.resolveConfiguredStatus('OCR_STATUS_DUPLICATE', 'duplicado');
   }
 
   private get statusError(): string {
