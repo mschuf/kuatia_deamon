@@ -201,23 +201,37 @@ export class DaemonRepository {
     });
   }
 
-  async findExistingDocumentIdByInvoiceNumber(
+  async findExistingDocumentIdByInvoiceNumberAndRuc(
     companyId: number,
     documentId: number,
     invoiceNumber: string,
+    partnerFiscalId: string,
   ): Promise<number | null> {
     const cleanedInvoiceNumber = invoiceNumber.trim();
-    if (!cleanedInvoiceNumber) {
+    const cleanedPartnerFiscalId = partnerFiscalId.trim();
+    if (!cleanedInvoiceNumber || !cleanedPartnerFiscalId) {
       return null;
     }
 
     const normalizedDigits = this.onlyDigits(cleanedInvoiceNumber);
-    const values: unknown[] = [companyId, documentId, cleanedInvoiceNumber];
+    const normalizedPartnerDigits = this.onlyDigits(cleanedPartnerFiscalId);
+    const values: unknown[] = [
+      companyId,
+      documentId,
+      cleanedInvoiceNumber,
+      cleanedPartnerFiscalId,
+    ];
     let invoicePredicate = `BTRIM(doc_numero) = $3`;
+    let partnerPredicate = `BTRIM(sn_ruc) = $4`;
 
     if (normalizedDigits) {
       values.push(normalizedDigits);
-      invoicePredicate = `(${invoicePredicate} OR regexp_replace(doc_numero, '[^0-9]', '', 'g') = $4)`;
+      invoicePredicate = `(${invoicePredicate} OR regexp_replace(doc_numero, '[^0-9]', '', 'g') = $${values.length})`;
+    }
+
+    if (normalizedPartnerDigits) {
+      values.push(normalizedPartnerDigits);
+      partnerPredicate = `(${partnerPredicate} OR regexp_replace(sn_ruc, '[^0-9]', '', 'g') = $${values.length})`;
     }
 
     const rawRows: unknown = await this.dataSource.query(
@@ -228,7 +242,10 @@ export class DaemonRepository {
         AND id <> $2
         AND doc_numero IS NOT NULL
         AND BTRIM(doc_numero) <> ''
+        AND sn_ruc IS NOT NULL
+        AND BTRIM(sn_ruc) <> ''
         AND ${invoicePredicate}
+        AND ${partnerPredicate}
       ORDER BY id ASC
       LIMIT 1
       `,
@@ -237,6 +254,19 @@ export class DaemonRepository {
 
     const rows = this.asArray<DocumentIdRow>(rawRows);
     return this.toNumericId(rows[0]?.id);
+  }
+
+  async deleteDocumentById(documentId: number): Promise<boolean> {
+    const rawRows: unknown = await this.dataSource.query(
+      `
+      DELETE FROM ${this.schema}.lk_documentos
+      WHERE id = $1
+      RETURNING id
+      `,
+      [documentId],
+    );
+
+    return this.asArray<DocumentIdRow>(rawRows).length > 0;
   }
 
   async setDocumentStatus(documentId: number, status: string): Promise<void> {

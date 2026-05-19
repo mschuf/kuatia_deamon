@@ -298,27 +298,26 @@ export class OcrDaemonService {
       }
 
       const invoiceNumber = this.getInvoiceNumberFromOcr(normalizedData);
-      if (invoiceNumber) {
+      const partnerFiscalId = this.getPartnerFiscalIdFromOcr(normalizedData);
+      if (invoiceNumber && partnerFiscalId) {
         const duplicateDocumentId =
-          await this.daemonRepository.findExistingDocumentIdByInvoiceNumber(
+          await this.daemonRepository.findExistingDocumentIdByInvoiceNumberAndRuc(
             document.emp_id,
             document.id,
             invoiceNumber,
+            partnerFiscalId,
           );
 
         if (duplicateDocumentId !== null) {
-          await this.safeSetDocumentStatus(
-            document.id,
-            this.statusDuplicate,
-            contextBase,
-          );
+          await this.daemonRepository.deleteDocumentById(document.id);
           this.stepLogger.warn(
-            'Factura duplicada detectada; se omite persistencia OCR.',
+            'Factura duplicada detectada; se elimino el documento ingresado por segunda vez.',
             {
               ...contextBase,
               step: 'doc.duplicate_invoice',
               metadata: {
                 invoiceNumber,
+                partnerFiscalId,
                 duplicateDocumentId,
                 updatedFields: updateFields,
                 providerFiscalId: normalizedData.providerFiscalId,
@@ -332,6 +331,19 @@ export class OcrDaemonService {
             partnerCreated: false,
           };
         }
+      } else if (invoiceNumber) {
+        this.stepLogger.debug(
+          'No se valida duplicado porque OCR no devolvio sn_ruc.',
+          {
+            ...contextBase,
+            step: 'doc.duplicate_invoice_missing_ruc',
+            metadata: {
+              invoiceNumber,
+              updatedFields: updateFields,
+              aliasesApplied: normalizedData.aliasesApplied,
+            },
+          },
+        );
       }
 
       const persistResult = await this.daemonRepository.persistProcessedDocument(
@@ -427,6 +439,27 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
     return null;
   }
 
+  private getPartnerFiscalIdFromOcr(
+    normalizedData: PreparedOcrPayload,
+  ): string | null {
+    const partnerFiscalId =
+      normalizedData.documentUpdates.sn_ruc ?? normalizedData.providerFiscalId;
+
+    if (typeof partnerFiscalId === 'string') {
+      const trimmed = partnerFiscalId.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+
+    if (
+      typeof partnerFiscalId === 'number' ||
+      typeof partnerFiscalId === 'bigint'
+    ) {
+      return String(partnerFiscalId);
+    }
+
+    return null;
+  }
+
   private resolveBatchLimit(limitOverride: number | undefined): number {
     if (typeof limitOverride === 'number' && Number.isFinite(limitOverride)) {
       return Math.max(1, Math.min(200, Math.floor(limitOverride)));
@@ -464,10 +497,6 @@ INSTRUCCIONES OBLIGATORIAS DE SALIDA:
 
   private get statusIncomplete(): string {
     return this.resolveConfiguredStatus('OCR_STATUS_INCOMPLETE', 'error');
-  }
-
-  private get statusDuplicate(): string {
-    return this.resolveConfiguredStatus('OCR_STATUS_DUPLICATE', 'duplicado');
   }
 
   private get statusError(): string {

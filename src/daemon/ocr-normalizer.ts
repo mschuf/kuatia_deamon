@@ -5,6 +5,9 @@ const LEGACY_KEY_ALIASES: Record<string, string> = {
   sn_ruc: 'sn_ruc',
   ruc: 'sn_ruc',
   ruc_proveedor: 'sn_ruc',
+  ruc_cliente: 'sn_ruc',
+  client_ruc: 'sn_ruc',
+  customer_ruc: 'sn_ruc',
   supplierruc: 'sn_ruc',
   supplier_ruc: 'sn_ruc',
 
@@ -52,6 +55,9 @@ const PROVIDER_FISCAL_ID_KEYS = [
   'sn_id_fiscal',
   'ruc',
   'ruc_proveedor',
+  'ruc_cliente',
+  'client_ruc',
+  'customer_ruc',
   'supplier_ruc',
   'supplierruc',
 ];
