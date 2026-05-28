@@ -89,7 +89,7 @@ export class KuatiaOcrClient {
     if (!response.ok) {
       const errorBody = await response.text();
       throw new Error(
-        `OCR-KUATIA respondio ${response.status}: ${errorBody.slice(0, 500)}`,
+        `OCR-KUATIA respondio ${response.status}: ${errorBody}`,
       );
     }
 

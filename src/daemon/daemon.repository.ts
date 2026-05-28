@@ -4,6 +4,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import {
   DocumentToProcess,
   PreparedOcrPayload,
+  ProcesoLogInput,
   PromptRow,
 } from './daemon.types';
 
@@ -281,6 +282,47 @@ export class DaemonRepository {
     );
   }
 
+  async insertProcesoLog(input: ProcesoLogInput): Promise<void> {
+    try {
+      await this.dataSource.query(
+        `
+        INSERT INTO ${this.schema}.lk_proceso_logs
+        (
+          emp_id,
+          usr_id,
+          lk_documento_id,
+          origen,
+          nivel,
+          evento,
+          mensaje,
+          payload,
+          run_id,
+          fecha_creacion,
+          fecha_modificacion
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+        `,
+        [
+          this.toNullableNumber(input.empId),
+          this.toNullableNumber(input.usrId),
+          this.toNullableNumber(input.documentoId),
+          input.origen,
+          input.nivel ?? 'info',
+          input.evento,
+          input.mensaje ?? null,
+          this.stringifyLogPayload(input.payload),
+          input.runId ?? null,
+        ],
+      );
+    } catch (error) {
+      if (this.isUndefinedRelationError(error)) {
+        return;
+      }
+
+      throw error;
+    }
+  }
+
   private async fetchPendingDocumentsFromView(
     limit: number,
   ): Promise<DocumentToProcess[]> {
@@ -468,6 +510,27 @@ export class DaemonRepository {
 
   private onlyDigits(value: string): string {
     return value.replace(/[^0-9]/g, '');
+  }
+
+  private stringifyLogPayload(payload: unknown): string | null {
+    if (payload === undefined || payload === null) {
+      return null;
+    }
+
+    if (typeof payload === 'string') {
+      return payload;
+    }
+
+    try {
+      return JSON.stringify(payload);
+    } catch {
+      return String(payload);
+    }
+  }
+
+  private toNullableNumber(value: unknown): number | null {
+    const parsed = this.toNumericId(value);
+    return parsed === null ? null : parsed;
   }
 
   private toNumericId(value: unknown): number | null {

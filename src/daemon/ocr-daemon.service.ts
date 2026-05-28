@@ -89,6 +89,17 @@ export class OcrDaemonService {
         limitOverride: options.limit ?? null,
       },
     });
+    await this.safeProcesoLog({
+      runId,
+      origen: 'daemon',
+      nivel: 'info',
+      evento: 'cycle.start',
+      mensaje: 'Iniciando ciclo de daemon OCR.',
+      payload: {
+        trigger,
+        limitOverride: options.limit ?? null,
+      },
+    });
 
     try {
       const limit = this.resolveBatchLimit(options.limit);
@@ -103,6 +114,20 @@ export class OcrDaemonService {
         runId,
         step: 'cycle.fetch_pending',
         metadata: {
+          count: pendingDocuments.length,
+          limit,
+          updatableColumnsCount: updatableColumns.size,
+          hasPrompt: Boolean(globalPrompt),
+          promptId: globalPrompt?.id ?? null,
+        },
+      });
+      await this.safeProcesoLog({
+        runId,
+        origen: 'daemon',
+        nivel: 'info',
+        evento: 'cycle.fetch_pending',
+        mensaje: 'Documentos pendientes obtenidos.',
+        payload: {
           count: pendingDocuments.length,
           limit,
           updatableColumnsCount: updatableColumns.size,
@@ -142,6 +167,14 @@ export class OcrDaemonService {
         },
         error,
       );
+      await this.safeProcesoLog({
+        runId,
+        origen: 'daemon',
+        nivel: 'error',
+        evento: 'cycle.error',
+        mensaje: 'Error general durante el ciclo del daemon.',
+        payload: this.serializeError(error),
+      });
     } finally {
       summary.finishedAt = new Date().toISOString();
       this.lastSummary = summary;
@@ -151,6 +184,14 @@ export class OcrDaemonService {
         runId,
         step: 'cycle.finish',
         metadata: summary,
+      });
+      await this.safeProcesoLog({
+        runId,
+        origen: 'daemon',
+        nivel: 'info',
+        evento: 'cycle.finish',
+        mensaje: 'Ciclo del daemon finalizado.',
+        payload: summary,
       });
     }
 
@@ -208,6 +249,15 @@ export class OcrDaemonService {
         ...contextBase,
         step: 'doc.start',
       });
+      await this.safeProcesoLog({
+        runId,
+        empId: document.emp_id,
+        documentoId: document.id,
+        origen: 'daemon',
+        nivel: 'info',
+        evento: 'doc.start',
+        mensaje: 'Iniciando procesamiento de documento.',
+      });
 
       if (!document.doc_documento) {
         await this.safeSetDocumentStatus(
@@ -218,6 +268,16 @@ export class OcrDaemonService {
         this.stepLogger.error('Documento sin contenido para OCR.', {
           ...contextBase,
           step: 'doc.validate_content',
+        });
+        await this.safeProcesoLog({
+          runId,
+          empId: document.emp_id,
+          documentoId: document.id,
+          origen: 'daemon',
+          nivel: 'error',
+          evento: 'doc.validate_content',
+          mensaje: 'Documento sin contenido para OCR.',
+          payload: { status: this.statusWithoutDocument },
         });
         return {
           status: 'skipped',
@@ -238,6 +298,16 @@ export class OcrDaemonService {
             step: 'doc.prompt',
           },
         );
+        await this.safeProcesoLog({
+          runId,
+          empId: document.emp_id,
+          documentoId: document.id,
+          origen: 'daemon',
+          nivel: 'error',
+          evento: 'doc.prompt',
+          mensaje: 'No existe prompt activo/habilitado para ejecutar OCR.',
+          payload: { status: this.statusWithoutPrompt },
+        });
         return {
           status: 'skipped',
           partnerCreated: false,
@@ -250,6 +320,19 @@ export class OcrDaemonService {
         ...contextBase,
         step: 'doc.send_ocr',
         metadata: {
+          documentLength: document.doc_documento.length,
+          promptId: globalPrompt.id,
+        },
+      });
+      await this.safeProcesoLog({
+        runId,
+        empId: document.emp_id,
+        documentoId: document.id,
+        origen: 'daemon',
+        nivel: 'debug',
+        evento: 'doc.send_ocr',
+        mensaje: 'Enviando documento a OCR-KUATIA.',
+        payload: {
           documentLength: document.doc_documento.length,
           promptId: globalPrompt.id,
         },
@@ -268,6 +351,16 @@ export class OcrDaemonService {
         metadata: {
           responseKeys: Object.keys(rawOcrData),
         },
+      });
+      await this.safeProcesoLog({
+        runId,
+        empId: document.emp_id,
+        documentoId: document.id,
+        origen: 'daemon',
+        nivel: 'info',
+        evento: 'doc.ocr_response',
+        mensaje: 'Respuesta OCR recibida desde OCR-KUATIA.',
+        payload: rawOcrData,
       });
 
       const normalizedData = normalizeOcrPayload(rawOcrData, updatableColumns);
@@ -290,6 +383,20 @@ export class OcrDaemonService {
             },
           },
         );
+        await this.safeProcesoLog({
+          runId,
+          empId: document.emp_id,
+          documentoId: document.id,
+          origen: 'daemon',
+          nivel: 'error',
+          evento: 'doc.validate_output',
+          mensaje: 'OCR sin campos validos para actualizar lk_documentos.',
+          payload: {
+            ignoredFields: normalizedData.ignoredFields,
+            responseKeys: Object.keys(rawOcrData),
+            rawOcrData,
+          },
+        });
 
         return {
           status: 'failed',
@@ -325,6 +432,24 @@ export class OcrDaemonService {
               },
             },
           );
+          await this.safeProcesoLog({
+            runId,
+            empId: document.emp_id,
+            documentoId: document.id,
+            origen: 'daemon',
+            nivel: 'warn',
+            evento: 'doc.duplicate_invoice',
+            mensaje:
+              'Factura duplicada detectada; se elimino el documento ingresado por segunda vez.',
+            payload: {
+              invoiceNumber,
+              partnerFiscalId,
+              duplicateDocumentId,
+              updatedFields: updateFields,
+              providerFiscalId: normalizedData.providerFiscalId,
+              aliasesApplied: normalizedData.aliasesApplied,
+            },
+          });
 
           return {
             status: 'skipped',
@@ -367,6 +492,23 @@ export class OcrDaemonService {
           },
         },
       );
+      await this.safeProcesoLog({
+        runId,
+        empId: document.emp_id,
+        documentoId: document.id,
+        origen: 'daemon',
+        nivel: 'info',
+        evento: 'doc.persist',
+        mensaje: 'Documento actualizado correctamente en base de datos.',
+        payload: {
+          partnerCreated: persistResult.partnerCreated,
+          partnerId: persistResult.partnerId,
+          updatedFields: updateFields,
+          providerFiscalId: normalizedData.providerFiscalId,
+          aliasesApplied: normalizedData.aliasesApplied,
+          ignoredFields: normalizedData.ignoredFields,
+        },
+      });
 
       return {
         status: 'updated',
@@ -382,6 +524,16 @@ export class OcrDaemonService {
         },
         error,
       );
+      await this.safeProcesoLog({
+        runId,
+        empId: document.emp_id,
+        documentoId: document.id,
+        origen: 'daemon',
+        nivel: 'error',
+        evento: 'doc.error',
+        mensaje: 'Error procesando documento.',
+        payload: this.serializeError(error),
+      });
 
       return {
         status: 'failed',
@@ -407,6 +559,46 @@ export class OcrDaemonService {
         },
       });
     }
+  }
+
+  private async safeProcesoLog(input: {
+    empId?: number | null;
+    documentoId?: number | null;
+    origen: string;
+    nivel?: 'debug' | 'info' | 'warn' | 'error';
+    evento: string;
+    mensaje?: string | null;
+    payload?: unknown;
+    runId?: string | null;
+  }): Promise<void> {
+    try {
+      await this.daemonRepository.insertProcesoLog(input);
+    } catch (error) {
+      this.stepLogger.warn('No se pudo guardar log de proceso en base.', {
+        runId: input.runId ?? 'unknown',
+        documentId: input.documentoId ?? undefined,
+        companyId: input.empId ?? undefined,
+        step: 'log.persist_error',
+        metadata: {
+          evento: input.evento,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private serializeError(error: unknown): Record<string, unknown> {
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      };
+    }
+
+    return {
+      message: String(error),
+    };
   }
 
   private composePrompt(globalPrompt: string): string {

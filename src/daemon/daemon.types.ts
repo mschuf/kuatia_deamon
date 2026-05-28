@@ -32,3 +32,17 @@ export interface DaemonCycleSummary {
   skipped: number;
   partnersCreated: number;
 }
+
+export type ProcesoLogNivel = 'debug' | 'info' | 'warn' | 'error';
+
+export interface ProcesoLogInput {
+  empId?: number | null;
+  usrId?: number | null;
+  documentoId?: number | null;
+  origen: string;
+  nivel?: ProcesoLogNivel;
+  evento: string;
+  mensaje?: string | null;
+  payload?: unknown;
+  runId?: string | null;
+}
