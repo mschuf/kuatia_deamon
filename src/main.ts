@@ -15,9 +15,9 @@ async function bootstrap() {
   );
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('Kuatia Daemon API')
+    .setTitle('Kuatrix Daemon API')
     .setDescription(
-      'Daemon OCR para procesar documentos pendientes de Kuatia, delegar OCR en OCR-KUATIA y actualizar lk_documentos.',
+      'Daemon OCR para procesar documentos pendientes de Kuatrix, delegar OCR en OCR-KUATRIX y actualizar lk_documentos.',
     )
     .setVersion('1.0.0')
     .addTag('daemon')

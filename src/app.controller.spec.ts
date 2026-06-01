@@ -17,7 +17,7 @@ describe('AppController', () => {
   describe('root', () => {
     it('should return daemon info', () => {
       expect(appController.getInfo()).toEqual({
-        service: 'kuatia-daemon',
+        service: 'kuatrix-daemon',
         status: 'ok',
         docs: '/api',
         health: '/daemon/health',

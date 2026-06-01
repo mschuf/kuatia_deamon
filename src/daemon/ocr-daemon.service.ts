@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { StepLoggerService } from '../logging/step-logger.service';
 import { DaemonRepository } from './daemon.repository';
-import { KuatiaOcrClient } from './kuatia-ocr.client';
+import { KuatrixOcrClient } from './kuatrix-ocr.client';
 import {
   DaemonCycleSummary,
   DocumentToProcess,
@@ -31,13 +31,13 @@ export class OcrDaemonService {
   constructor(
     private readonly configService: ConfigService,
     private readonly daemonRepository: DaemonRepository,
-    private readonly kuatiaOcrClient: KuatiaOcrClient,
+    private readonly kuatrixOcrClient: KuatrixOcrClient,
     private readonly stepLogger: StepLoggerService,
   ) {}
 
   getStatus(): Record<string, unknown> {
     return {
-      service: 'kuatia-daemon',
+      service: 'kuatrix-daemon',
       running: this.isRunning,
       intervalMinutes: this.intervalMinutes,
       defaultBatchSize: this.defaultBatchSize,
@@ -316,7 +316,7 @@ export class OcrDaemonService {
 
       const composedPrompt = this.composePrompt(globalPrompt.prompt);
 
-      this.stepLogger.debug('Enviando documento a OCR-KUATIA.', {
+      this.stepLogger.debug('Enviando documento a OCR-KUATRIX.', {
         ...contextBase,
         step: 'doc.send_ocr',
         metadata: {
@@ -331,21 +331,21 @@ export class OcrDaemonService {
         origen: 'daemon',
         nivel: 'debug',
         evento: 'doc.send_ocr',
-        mensaje: 'Enviando documento a OCR-KUATIA.',
+        mensaje: 'Enviando documento a OCR-KUATRIX.',
         payload: {
           documentLength: document.doc_documento.length,
           promptId: globalPrompt.id,
         },
       });
 
-      const rawOcrData = await this.kuatiaOcrClient.processDocument({
+      const rawOcrData = await this.kuatrixOcrClient.processDocument({
         documento: document.doc_documento,
         empresaId: document.emp_id,
         prompt: composedPrompt,
         documentId: document.id,
       });
 
-      this.stepLogger.debug('Respuesta OCR recibida desde OCR-KUATIA.', {
+      this.stepLogger.debug('Respuesta OCR recibida desde OCR-KUATRIX.', {
         ...contextBase,
         step: 'doc.ocr_response',
         metadata: {
@@ -359,7 +359,7 @@ export class OcrDaemonService {
         origen: 'daemon',
         nivel: 'info',
         evento: 'doc.ocr_response',
-        mensaje: 'Respuesta OCR recibida desde OCR-KUATIA.',
+        mensaje: 'Respuesta OCR recibida desde OCR-KUATRIX.',
         payload: rawOcrData,
       });
 

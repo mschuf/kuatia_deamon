@@ -1,7 +1,7 @@
-# Kuatia Daemon (NestJS)
+# Kuatrix Daemon (NestJS)
 
-`kuatia-daemon` orquesta OCR para documentos pendientes en Kuatia.
-No procesa OCR directamente: delega en `OCR-KUATIA`.
+`kuatrix-daemon` orquesta OCR para documentos pendientes en Kuatrix.
+No procesa OCR directamente: delega en `OCR-KUATRIX`.
 
 ## Flujo
 
@@ -14,7 +14,7 @@ No procesa OCR directamente: delega en `OCR-KUATIA`.
    - toma el mas nuevo
    - filtra por `active = true`
    - si existen columnas `habilitado` o `enabled`, tambien exige `true`
-4. Envia documento a `OCR-KUATIA` (`POST /ocr/process` multipart).
+4. Envia documento a `OCR-KUATRIX` (`POST /ocr/process` multipart).
 5. Normaliza respuesta OCR y actualiza dinamicamente `lk_documentos`.
 6. Crea socio de negocio en `lk_socios_negocios` si no existe por `sn_ruc`.
 
@@ -22,7 +22,7 @@ No procesa OCR directamente: delega en `OCR-KUATIA`.
 
 - Prompt global: no es por empresa, se usa solo el mas nuevo activo/habilitado.
 - Socio y documento usan `sn_ruc` (no `sn_id_fiscal`).
-- Cliente OCR adaptado al contrato de `OCR-KUATIA` (`{ success, result }`).
+- Cliente OCR adaptado al contrato de `OCR-KUATRIX` (`{ success, result }`).
 
 ## Endpoints
 
@@ -45,15 +45,15 @@ POSTGRES_HOST=172.19.0.201
 POSTGRES_PORT=5432
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=change_me
-POSTGRES_DB=KUATIA_BACK
+POSTGRES_DB=KUATRIX_BACK
 DB_SCHEMA=public
 TYPEORM_LOGGING=false
 
-# OCR-KUATIA service
-KUATIA_OCR_BASE_URL=http://localhost:3000
-KUATIA_OCR_PROCESS_PATH=/ocr/process
-KUATIA_OCR_TIMEOUT_MS=120000
-KUATIA_OCR_API_TOKEN=
+# OCR-KUATRIX service
+KUATRIX_OCR_BASE_URL=http://localhost:3000
+KUATRIX_OCR_PROCESS_PATH=/ocr/process
+KUATRIX_OCR_TIMEOUT_MS=120000
+KUATRIX_OCR_API_TOKEN=
 
 # Daemon behavior
 OCR_DAEMON_INTERVAL_MINUTES=5

@@ -17,7 +17,7 @@ interface DocumentFilePayload {
 }
 
 @Injectable()
-export class KuatiaOcrClient {
+export class KuatrixOcrClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly downloadTimeoutMs: number;
@@ -26,20 +26,27 @@ export class KuatiaOcrClient {
 
   constructor(private readonly configService: ConfigService) {
     this.baseUrl =
+      this.configService.get<string>('KUATRIX_OCR_BASE_URL') ??
       this.configService.get<string>('KUATIA_OCR_BASE_URL') ??
       'http://localhost:3000';
     this.timeoutMs = Number(
-      this.configService.get<string>('KUATIA_OCR_TIMEOUT_MS') ?? 120000,
+      this.configService.get<string>('KUATRIX_OCR_TIMEOUT_MS') ??
+        this.configService.get<string>('KUATIA_OCR_TIMEOUT_MS') ??
+        120000,
     );
     this.downloadTimeoutMs = Number(
-      this.configService.get<string>('KUATIA_OCR_DOWNLOAD_TIMEOUT_MS') ??
+      this.configService.get<string>('KUATRIX_OCR_DOWNLOAD_TIMEOUT_MS') ??
+        this.configService.get<string>('KUATIA_OCR_DOWNLOAD_TIMEOUT_MS') ??
         this.timeoutMs,
     );
     this.processPath =
+      this.configService.get<string>('KUATRIX_OCR_PROCESS_PATH') ??
       this.configService.get<string>('KUATIA_OCR_PROCESS_PATH') ??
       '/ocr/process';
 
     const configuredToken = this.configService.get<string>(
+      'KUATRIX_OCR_API_TOKEN',
+    ) ?? this.configService.get<string>(
       'KUATIA_OCR_API_TOKEN',
     );
     this.apiToken =
@@ -83,13 +90,13 @@ export class KuatiaOcrClient {
         body: formData,
       },
       this.timeoutMs,
-      `Tiempo de espera agotado al invocar OCR-KUATIA tras ${this.timeoutMs} ms.`,
+      `Tiempo de espera agotado al invocar OCR-KUATRIX tras ${this.timeoutMs} ms.`,
     );
 
     if (!response.ok) {
       const errorBody = await response.text();
       throw new Error(
-        `OCR-KUATIA respondio ${response.status}: ${errorBody}`,
+        `OCR-KUATRIX respondio ${response.status}: ${errorBody}`,
       );
     }
 
@@ -182,7 +189,7 @@ export class KuatiaOcrClient {
       };
     }
 
-    throw new Error('Formato de documento no soportado para OCR-KUATIA.');
+    throw new Error('Formato de documento no soportado para OCR-KUATRIX.');
   }
 
   private buildFileName(documentId: number, mimeType: string): string {
