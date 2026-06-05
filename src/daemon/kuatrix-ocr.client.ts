@@ -82,7 +82,7 @@ export class KuatrixOcrClient {
       headers['x-ocr-token'] = this.apiToken;
     }
 
-    const response = await this.fetchWithTimeout(
+    return this.fetchWithTimeout(
       endpoint,
       {
         method: 'POST',
@@ -91,17 +91,18 @@ export class KuatrixOcrClient {
       },
       this.timeoutMs,
       `Tiempo de espera agotado al invocar OCR-KUATRIX tras ${this.timeoutMs} ms.`,
+      async (response) => {
+        if (!response.ok) {
+          const errorBody = await response.text();
+          throw new Error(
+            `OCR-KUATRIX respondio ${response.status}: ${errorBody}`,
+          );
+        }
+
+        const responseBody = (await response.json()) as unknown;
+        return this.extractPayload(responseBody);
+      },
     );
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(
-        `OCR-KUATRIX respondio ${response.status}: ${errorBody}`,
-      );
-    }
-
-    const responseBody = (await response.json()) as unknown;
-    return this.extractPayload(responseBody);
   }
 
   private extractPayload(payload: unknown): Record<string, unknown> {
@@ -153,25 +154,31 @@ export class KuatrixOcrClient {
     }
 
     if (/^https?:\/\//i.test(value)) {
-      const response = await this.fetchWithTimeout(
+      return this.fetchWithTimeout(
         value,
         undefined,
         this.downloadTimeoutMs,
         `Tiempo de espera agotado al descargar documento URL tras ${this.downloadTimeoutMs} ms.`,
+        async (response) => {
+          if (!response.ok) {
+            throw new Error(
+              `No se pudo descargar documento URL (${response.status})`,
+            );
+          }
+
+          const contentType = (
+            response.headers.get('content-type') ?? 'application/pdf'
+          )
+            .split(';')[0]
+            .trim();
+          const buffer = Buffer.from(await response.arrayBuffer());
+
+          return {
+            mimeType: contentType,
+            buffer,
+          };
+        },
       );
-      if (!response.ok) {
-        throw new Error(`No se pudo descargar documento URL (${response.status})`);
-      }
-
-      const contentType = (response.headers.get('content-type') ?? 'application/pdf')
-        .split(';')[0]
-        .trim();
-      const buffer = Buffer.from(await response.arrayBuffer());
-
-      return {
-        mimeType: contentType,
-        buffer,
-      };
     }
 
     if (await this.pathExists(value)) {
@@ -228,20 +235,27 @@ export class KuatrixOcrClient {
     return value.replace(/\s/g, '');
   }
 
-  private async fetchWithTimeout(
+  private async fetchWithTimeout<T>(
     url: string,
     init: RequestInit | undefined,
     timeoutMs: number,
     timeoutMessage: string,
-  ): Promise<Response> {
+    consume: (response: Response) => Promise<T>,
+  ): Promise<T> {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
-      return await fetch(url, {
+      const response = await fetch(url, {
         ...init,
         signal: abortController.signal,
       });
+
+      // Importante: la lectura del cuerpo (json/text/arrayBuffer) se hace aqui
+      // dentro, con el timeout todavia armado. Si OCR-KUATRIX envia las
+      // cabeceras pero se cuelga transmitiendo el cuerpo, el abort lo corta en
+      // lugar de quedar esperando para siempre y bloquear el ciclo del daemon.
+      return await consume(response);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error(timeoutMessage);

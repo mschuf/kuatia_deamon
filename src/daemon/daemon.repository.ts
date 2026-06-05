@@ -25,13 +25,14 @@ interface ColumnNameRow {
   column_name: string;
 }
 
-type PendingDocumentsSource = 'unknown' | 'view' | 'table';
+type PendingDocumentsSource = 'unknown' | 'function' | 'table';
 
 @Injectable()
 export class DaemonRepository {
   private readonly schema: string;
   private readonly columnsCacheMs: number;
   private readonly pendingStatuses: string[];
+  private readonly pendingFunction: string;
 
   private documentColumnsCache: string[] = [];
   private documentColumnsCacheAt = 0;
@@ -75,16 +76,24 @@ export class DaemonRepository {
     this.pendingStatuses = this.parsePendingStatuses(
       this.configService.get<string>('OCR_PENDING_STATUSES'),
     );
+
+    this.pendingFunction = this.validateIdentifier(
+      (
+        this.configService.get<string>('OCR_PENDING_FUNCTION') ??
+        'documentos_a_procesar'
+      ).trim(),
+      'OCR_PENDING_FUNCTION',
+    );
   }
 
   async fetchPendingDocuments(limit: number): Promise<DocumentToProcess[]> {
     if (this.pendingDocumentsSource !== 'table') {
       try {
-        const rows = await this.fetchPendingDocumentsFromView(limit);
-        this.pendingDocumentsSource = 'view';
+        const rows = await this.fetchPendingDocumentsFromFunction(limit);
+        this.pendingDocumentsSource = 'function';
         return rows;
       } catch (error) {
-        if (!this.isUndefinedRelationError(error)) {
+        if (!this.isMissingPendingSourceError(error)) {
           throw error;
         }
         this.pendingDocumentsSource = 'table';
@@ -323,14 +332,20 @@ export class DaemonRepository {
     }
   }
 
-  private async fetchPendingDocumentsFromView(
+  private async fetchPendingDocumentsFromFunction(
     limit: number,
   ): Promise<DocumentToProcess[]> {
+    // La funcion definida en la base (documentos_a_procesar) es la fuente de
+    // verdad sobre que documentos estan pendientes. Solo devuelve id y
+    // doc_documento, por lo que unimos con lk_documentos para obtener emp_id.
     const rawRows: unknown = await this.dataSource.query(
       `
-      SELECT id, emp_id, doc_documento
-      FROM ${this.schema}.v_documentos_a_procesar
-      ORDER BY id ASC
+      SELECT src.id, d.emp_id, d.doc_documento
+      FROM ${this.schema}.${this.pendingFunction}() AS src
+      JOIN ${this.schema}.lk_documentos d ON d.id = src.id
+      WHERE d.doc_documento IS NOT NULL
+        AND BTRIM(d.doc_documento) <> ''
+      ORDER BY src.id ASC
       LIMIT $1
       `,
       [limit],
@@ -342,12 +357,17 @@ export class DaemonRepository {
   private async fetchPendingDocumentsFromTable(
     limit: number,
   ): Promise<DocumentToProcess[]> {
+    // Fallback usado solo si la funcion no existe. Replica la misma condicion
+    // de pendiente (sin numero de factura y sin fecha de emision) y agrega el
+    // filtro de estado para no reprocesar documentos en error indefinidamente.
     const rawRows: unknown = await this.dataSource.query(
       `
       SELECT id, emp_id, doc_documento
       FROM ${this.schema}.lk_documentos
       WHERE doc_documento IS NOT NULL
         AND BTRIM(doc_documento) <> ''
+        AND (doc_numero IS NULL OR BTRIM(doc_numero) = '')
+        AND doc_fecha_emision IS NULL
         AND LOWER(BTRIM(COALESCE(doc_estado, ''))) = ANY($1::text[])
       ORDER BY id ASC
       LIMIT $2
@@ -490,6 +510,22 @@ export class DaemonRepository {
     }
     const maybeCode = (error as { code?: unknown }).code;
     return maybeCode === '42P01';
+  }
+
+  private isMissingPendingSourceError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+    const maybeCode = (error as { code?: unknown }).code;
+    // 42P01: relacion inexistente. 42883: funcion inexistente.
+    return maybeCode === '42P01' || maybeCode === '42883';
+  }
+
+  private validateIdentifier(value: string, label: string): string {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
+      throw new Error(`${label} invalido: ${value}`);
+    }
+    return value;
   }
 
   private asArray<T>(value: unknown): T[] {
